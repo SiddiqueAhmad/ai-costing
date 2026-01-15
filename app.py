@@ -13,26 +13,30 @@ SHEET_GID = "109996351" # e.g., "154826493" (Found in browser URL when on activi
 
 SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SHEET_GID}"
 
-
-# Function to load data (Cached so it doesn't spam Google every second)
-@st.cache_data(ttl=60) # Refreshes every 60 seconds
+@st.cache_data(ttl=60)
 def load_data():
     try:
         df = pd.read_csv(SHEET_CSV_URL)
-        # Clean headers
-        df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
-        # Convert times
-        df['start_time'] = pd.to_datetime(df['start_time'])
-        df['end_time'] = pd.to_datetime(df['end_time'])
-        # Handle "End Now" or missing end times for active jobs
-        # (Optional: fill NaT with current time for visualization purposes)
-        # df['end_time'] = df['end_time'].fillna(pd.Timestamp.now())
         
-        # Formatting for tooltip
+        # 1. Clean Headers
+        df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+        
+        # 2. Convert Times (ROBUST FIX)
+        # dayfirst=True tells it that 15/01 is Jan 15th, not Month 15 (Error)
+        # format='mixed' allows it to handle different formats in the same column
+        df['start_time'] = pd.to_datetime(df['start_time'], dayfirst=True, format='mixed', errors='coerce')
+        df['end_time'] = pd.to_datetime(df['end_time'], dayfirst=True, format='mixed', errors='coerce')
+
+        # 3. Clean up Machine Names
+        # Ensure it's a string so it plots correctly
+        df['machine_id'] = "Machine " + df['machine_id'].astype(str)
+        
+        # 4. Calculate Duration
         df['duration_min'] = (df['end_time'] - df['start_time']).dt.total_seconds() / 60
         df['duration_min'] = df['duration_min'].round(1)
-        df['machine_id'] = "Machine " + df['machine_id'].astype(str)
+        
         return df
+        
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return pd.DataFrame()
