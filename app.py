@@ -7,8 +7,12 @@ import time
 st.set_page_config(page_title="Machine Ops Feed", layout="wide")
 
 # --- CONFIGURATION ---
-# Replace with your actual Google Sheet CSV link
-SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1S8ECq792lFD4dsfhUiHpK1pycx_uEZePi_qlj3ZpQ_c/edit?usp=sharing"
+# We use the 'export' endpoint, not the 'edit' endpoint
+SHEET_ID = "1S8ECq792lFD4dsfhUiHpK1pycx_uEZePi_qlj3ZpQ_c"
+SHEET_GID = "109996351" # e.g., "154826493" (Found in browser URL when on activity_raw tab)
+
+SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SHEET_GID}"
+
 
 # Function to load data (Cached so it doesn't spam Google every second)
 @st.cache_data(ttl=60) # Refreshes every 60 seconds
