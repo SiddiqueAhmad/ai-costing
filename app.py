@@ -11,6 +11,7 @@ SHEET_ID = "1S8ECq792lFD4dsfhUiHpK1pycx_uEZePi_qlj3ZpQ_c"
 SHEET_GID = "109996351" # e.g., "154826493" (Found in browser URL when on activity_raw tab)
 
 SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SHEET_GID}"
+
 # --- 2. SIDEBAR (The "Wafeq" Controls) ---
 st.sidebar.header("💰 Rate Card Configuration")
 st.sidebar.write("Set your billing rates to calculate daily value.")
@@ -30,6 +31,7 @@ billable_activities = st.sidebar.multiselect(
 def load_data():
     try:
         df = pd.read_csv(SHEET_CSV_URL)
+        # Clean headers
         df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
         
         # Robust Time Parsing
@@ -40,8 +42,9 @@ def load_data():
         df = df.dropna(subset=['start_time', 'end_time'])
 
         # Data Enrichment
-        df['machine_id'] = df['machine_id'].astype(str).str.replace('Machine ', '') # Clean it first
-        df['machine_label'] = "Machine " + df['machine_id'] # Add it back for display
+        # Ensure machine_id is string and handle duplicates/formatting
+        df['machine_id'] = df['machine_id'].astype(str).str.replace('Machine ', '', regex=False)
+        df['machine_label'] = "Machine " + df['machine_id'] 
         
         # Calculate Duration
         df['duration_hrs'] = (df['end_time'] - df['start_time']).dt.total_seconds() / 3600
@@ -65,7 +68,6 @@ if not df.empty:
             return 0.0
         
         # 2. Apply Rate based on Machine ID
-        # (Assuming machine_id is '1' or '2')
         if '1' in str(row['machine_id']):
             return row['duration_hrs'] * rate_m1
         elif '2' in str(row['machine_id']):
@@ -81,7 +83,7 @@ if not df.empty:
     m1, m2, m3 = st.columns(3)
     m1.metric("💰 Total Revenue (Est)", f"PKR {total_rev:,.0f}")
     m2.metric("⏱️ Billable Hours", f"{total_hrs:.1f} hrs")
-    m3.metric("📊 Efficiency (OEE)", "Tracking...") # Placeholder for next phase
+    m3.metric("📊 Efficiency (OEE)", "Tracking...") 
 
     st.divider()
 
@@ -93,7 +95,7 @@ if not df.empty:
         x_end="end_time", 
         y="machine_label",
         color="activity_type",
-        # HOVER INFO: Show the money!
+        # HOVER INFO
         hover_data={"remark": True, "submitted_by": True, "cost_pkr": ':.0f', "machine_label": False},
         color_discrete_map={
             "Running": "#2ecc71", "Idle": "#f1c40f", 
@@ -105,13 +107,9 @@ if not df.empty:
 
     # --- DETAILED COST TABLE ---
     with st.expander("View Financial Breakdown"):
-        # Show a clean table of only billable work
+        # Filter purely for the table view
         billable_df = df[df['cost_pkr'] > 0][['timestamp', 'machine_label', 'activity_type', 'duration_min', 'cost_pkr', 'remark']]
         st.dataframe(billable_df.style.format({"cost_pkr": "PKR {:.2f}", "duration_min": "{:.1f} min"}))
 
 else:
-    st.info("Waiting for data...")
-        st.dataframe(df)
-
-else:
-    st.warning("No data found yet. Please check the Google Sheet link.")
+    st.info("Waiting for data... Please submit a form entry.")
