@@ -75,15 +75,28 @@ if not df.empty:
         return 0.0
 
     df['cost_pkr'] = df.apply(calculate_cost, axis=1)
-
     # --- TOP METRICS ---
     total_rev = df['cost_pkr'].sum()
-    total_hrs = df[df['cost_pkr'] > 0]['duration_hrs'].sum()
+    
+    # 1. Calculate Total Time Logged (The denominator)
+    total_logged_hrs = df['duration_hrs'].sum()
+    
+    # 2. Calculate "Value Added" Time (The numerator)
+    # We only count "Running" as productive time. Setup/Idle is lost time.
+    running_hrs = df[df['activity_type'] == 'Running']['duration_hrs'].sum()
+    
+    # 3. Calculate The Percentage
+    if total_logged_hrs > 0:
+        availability_pct = (running_hrs / total_logged_hrs) * 100
+    else:
+        availability_pct = 0.0
     
     m1, m2, m3 = st.columns(3)
     m1.metric("💰 Total Revenue (Est)", f"PKR {total_rev:,.0f}")
-    m2.metric("⏱️ Billable Hours", f"{total_hrs:.1f} hrs")
-    m3.metric("📊 Efficiency (OEE)", "Tracking...") 
+    m2.metric("⏱️ Billable Hours", f"{running_hrs:.1f} hrs")
+    
+    # UPDATED: Shows real efficiency now
+    m3.metric("⚙️ Availability (OEE)", f"{availability_pct:.1f}%", help="Running Time / Total Logged Time")
 
     st.divider()
 
