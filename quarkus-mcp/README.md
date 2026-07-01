@@ -46,6 +46,22 @@ See `%postgres.*` properties in `src/main/resources/application.properties`.
 No Java code changes are needed — `MachineActivity`, `CostingService` and
 `CostingMcpServer` are unaware of which database is behind them.
 
+This was verified for real (not just documented): the entire test suite —
+`ActivityCrudTest`, `JoinQueryTest`, `TransactionIsolationTest` and the
+original resource/MCP tests, 11 tests total, zero source changes — passes
+running against a live PostgreSQL 16 instance via:
+
+```shell
+mvn test -Dquarkus.test.profile=postgres
+```
+
+One gap turned up along the way: the base profile pins
+`quarkus.datasource.jdbc.driver=org.duckdb.DuckDBDriver`, and `%postgres.*`
+wasn't overriding it, so Agroal tried to open a `jdbc:postgresql://` URL
+with the DuckDB driver class and failed with "Driver does not support the
+provided URL". Fixed by adding
+`%postgres.quarkus.datasource.jdbc.driver=org.postgresql.Driver`.
+
 ## Running
 
 ```shell
@@ -84,16 +100,24 @@ on `MachineActivity#machine` — the join still works in JPQL/SQL, only the
 DDL-time constraint is skipped. See `MachineActivity.java`.
 
 **2. DuckDB's concurrency control does not block concurrent writers — it
-conflicts them.** Postgres's default `READ COMMITTED` has a second
-transaction writing an already-modified-but-uncommitted row *block* until
-the first commits or rolls back, then proceed. DuckDB does not block at
-all: a concurrent `UPDATE` on a row already touched by an uncommitted
-transaction fails immediately with `SQLException: TransactionContext
-Error: Conflict on update!` (optimistic MVCC). No dirty reads either way —
-verified directly. This is the one genuine "your Postgres code may need to
-change" finding: code that relies on Postgres's blocking behavior (e.g.
-using a write as a poor-man's row lock) will instead need to catch and
-retry on conflict against DuckDB. See `TransactionIsolationTest.java`.
+conflicts them.** Verified empirically against both databases with the same
+test (`TransactionIsolationTest#concurrentWritesToSameRowConflictRatherThanSilentlyOverwrite`):
+two raw JDBC connections, `c1` writes an uncommitted row, `c2` tries to
+write the same row before `c1` commits.
+- **Postgres** (real, live 16 instance): `c2` *blocks* until `c1` commits or
+  rolls back, then proceeds — classic `READ COMMITTED` row-level locking,
+  last committed writer wins. The test class visibly takes ~2s longer under
+  Postgres because it waits out this block.
+- **DuckDB**: `c2` does not block at all — it fails immediately with
+  `SQLException: TransactionContext Error: Conflict on update!`
+  (optimistic MVCC).
+
+No dirty reads either way — verified directly. This is the one genuine
+"your Postgres code may need to change" finding: code that relies on
+Postgres's blocking behavior (e.g. using a write as a poor-man's row lock,
+or code that never expects a write to simply fail with a conflict) will
+need to add conflict-catch-and-retry logic to run correctly against
+DuckDB. See `TransactionIsolationTest.java`.
 
 Everything else — full CRUD (`ActivityCrudTest`), a Hibernate-translated
 JPQL join-fetch, and a raw native query combining `JOIN` + `GROUP BY` +

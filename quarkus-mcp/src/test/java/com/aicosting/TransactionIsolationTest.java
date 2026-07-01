@@ -151,10 +151,12 @@ class TransactionIsolationTest {
             }
 
             if (outcome instanceof SQLException conflict) {
-                // Observed in practice: DuckDB does not block c2 at all -- it fails
-                // immediately with "TransactionContext Error: Conflict on update!"
-                // (optimistic concurrency control), unlike Postgres's default READ
-                // COMMITTED, which would block c2 until c1 commits/rolls back.
+                // Observed in practice against DuckDB: c2 does not block at all --
+                // it fails immediately with "TransactionContext Error: Conflict on
+                // update!" (optimistic concurrency control). Against real Postgres
+                // (verified with -Dquarkus.test.profile=postgres), c2 instead blocks
+                // (`blocked` above is true) until c1 commits, then proceeds and wins
+                // as the last writer -- classic READ COMMITTED row-level locking.
                 assertTrue(true, "conflict surfaced as SQLException: " + conflict.getMessage());
                 c2.rollback();
             } else {
