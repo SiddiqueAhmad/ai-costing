@@ -54,12 +54,52 @@ No Java code changes are needed — `MachineActivity`, `CostingService` and
 
 This starts on <http://localhost:8080> with:
 
-- A REST endpoint: `GET /costing/summary`
+- REST endpoints:
+  - `GET /costing/summary` — total revenue and per-machine availability
+  - `GET /costing/report` — join + `GROUP BY` + `RANK()` window-function report (see below)
+  - `GET/POST/PUT/DELETE /activities[/{id}]` — full CRUD over `machine_activity`
 - An MCP server (Streamable HTTP + SSE) at `/mcp` exposing four tools:
   - `listActivities(machineId?)` — list logged machine activity, optionally filtered by machine
   - `machineAvailability(machineId)` — OEE-style availability percentage (running time / total logged time)
   - `totalRevenue()` — estimated billable revenue across all activity
   - `logActivity(machineId, activityType, startTime, endTime, remark?)` — record a new activity entry
+
+## CRUD, joins and transaction isolation — what actually happened
+
+Beyond the read-only summary, this module was stress-tested with a full CRUD
+lifecycle, multi-table joins/aggregates, and concurrent-transaction probes
+against DuckDB. Two real incompatibilities with Postgres-style Hibernate
+usage turned up; both are now worked around and covered by tests.
+
+**1. DuckDB rejects `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY`.**
+Adding a `@ManyToOne` from `MachineActivity` to a new `Machine` catalog
+entity (to get a real foreign-key join) broke schema generation outright:
+Hibernate emits the FK as a post-hoc `ALTER TABLE`, and DuckDB's JDBC driver
+throws `Not implemented Error: No support for that ALTER TABLE option yet!`
+(DuckDB only supports inline FKs at `CREATE TABLE` time). Because the schema
+statement failed, `import.sql` seeding cascaded into failure too, silently
+leaving the database empty. Fixed with
+`@JoinColumn(..., foreignKey = @ForeignKey(ConstraintMode.NO_CONSTRAINT))`
+on `MachineActivity#machine` — the join still works in JPQL/SQL, only the
+DDL-time constraint is skipped. See `MachineActivity.java`.
+
+**2. DuckDB's concurrency control does not block concurrent writers — it
+conflicts them.** Postgres's default `READ COMMITTED` has a second
+transaction writing an already-modified-but-uncommitted row *block* until
+the first commits or rolls back, then proceed. DuckDB does not block at
+all: a concurrent `UPDATE` on a row already touched by an uncommitted
+transaction fails immediately with `SQLException: TransactionContext
+Error: Conflict on update!` (optimistic MVCC). No dirty reads either way —
+verified directly. This is the one genuine "your Postgres code may need to
+change" finding: code that relies on Postgres's blocking behavior (e.g.
+using a write as a poor-man's row lock) will instead need to catch and
+retry on conflict against DuckDB. See `TransactionIsolationTest.java`.
+
+Everything else — full CRUD (`ActivityCrudTest`), a Hibernate-translated
+JPQL join-fetch, and a raw native query combining `JOIN` + `GROUP BY` +
+`CASE` aggregation + `RANK() OVER (...)` (`JoinQueryTest`,
+`CostingService#revenueByMachineReport`) — worked against DuckDB exactly as
+it would against Postgres, no code changes required.
 
 Sample data is seeded from `src/main/resources/import.sql` on every startup
 (`quarkus.hibernate-orm.database.generation=drop-and-create`, dev-experiment
