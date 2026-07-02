@@ -125,6 +125,66 @@ JPQL join-fetch, and a raw native query combining `JOIN` + `GROUP BY` +
 `CostingService#revenueByMachineReport`) — worked against DuckDB exactly as
 it would against Postgres, no code changes required.
 
+## Quack protocol (DuckDB client/server, beta) — what actually works
+
+DuckDB's `quack` extension ("The DuckDB 'Quack' Client/Server Protocol",
+per `duckdb_extensions()`) lifts the historical one-writer-process rule:
+one DuckDB instance serves a database over plain HTTP, other instances
+attach to it remotely — including for writes. Normally it's just
+`INSTALL quack; LOAD quack;`. In this sandbox `extensions.duckdb.org` is
+blocked by the egress policy, so the identical v1.5.3 binaries were
+side-loaded from the PyPI repackaging wheels `duckdb-extension-quack` /
+`duckdb-extension-httpfs` (which is also why `duckdb-jdbc.version` in
+`pom.xml` is pinned to 1.5.3.0 — extension binaries are locked to the
+exact engine version).
+
+Server (any DuckDB connection holding the database):
+
+```sql
+LOAD httpfs; LOAD quack;
+SELECT * FROM quack_serve('quack://localhost:9595', token=>'sesame', disable_ssl=>true);
+-- returns (name, url, token); serves while the connection lives; quack_stop(url) to stop
+```
+
+Client:
+
+```sql
+LOAD httpfs; LOAD quack;
+ATTACH 'quack://localhost:9595' AS remote (TYPE QUACK, TOKEN 'sesame', DISABLE_SSL true);
+SELECT count(*) FROM remote.machine_activity;                 -- works
+INSERT INTO remote.machine_activity VALUES (...);             -- works, concurrently from many processes
+-- arbitrary SQL executed server-side (joins, UPDATE/DELETE, sequences):
+SELECT * FROM quack_query('quack://localhost:9595', $$UPDATE ... $$, token=>'sesame', disable_ssl=>true);
+```
+
+`QuackProtocolTest` drives all of this through the same JDBC driver the
+Quarkus app uses (it skips itself when the extension binaries aren't
+present). Verified findings, v1.5.3 beta:
+
+- **The multi-writer claim is real.** 4 separate OS processes concurrently
+  INSERTed 200/200 rows through one Quack server — zero errors, zero lost
+  writes, distinct ids. Plain file-attach DuckDB refuses a second writer
+  process outright; over Quack it just works. It is genuinely HTTP
+  (curl gets a 200 from the endpoint), token-authenticated, TLS by default
+  (`disable_ssl` for local experiments).
+- **Beta limitations (pinned by `betaLimitationsClientSideMutationAndCatalog`
+  so an upgrade that lifts them fails loudly):** on an attached remote,
+  UPDATE/DELETE fail with "Can only update base table", two remote tables
+  can't be joined in one client-side query ("multiple streaming scans"),
+  and remote sequences are invisible to the client catalog. All of these
+  work fine via the `quack_query()` server-side pass-through.
+- **Consequence for this app:** Hibernate needs client-side UPDATE/DELETE
+  and `nextval()` on its id sequence, so the full ORM suite cannot run over
+  a Quack ATTACH yet — that's a demonstrated beta limit, not a config gap.
+  Append-heavy + read/analytics workloads (this app's actual shape) work
+  today.
+- **Contention is still optimistic, now over the wire.** Hammering the
+  *same row* with UPDATEs from 4 processes: ~42% failed instantly with
+  `Conflict on update!` while latencies stayed flat (~7 ms) — the server
+  does not queue conflicting writers the way Postgres row locks make a
+  client wait; losers fail fast and the client owns the retry. (Concurrent
+  *inserts* never conflict — appends are conflict-free in DuckDB's MVCC.)
+
 Sample data is seeded from `src/main/resources/import.sql` on every startup
 (`quarkus.hibernate-orm.database.generation=drop-and-create`, dev-experiment
 only — not meant for a persistent database).
